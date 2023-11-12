@@ -5,7 +5,7 @@ plugins {
 }
 
 group 'com.gluonhq'
-version '1.0.22-SNAPSHOT'
+version '1.0.22-custom-SNAPSHOT'
 
 java {
     toolchain.languageVersion = JavaLanguageVersion.of(11)
@@ -14,6 +14,7 @@ java {
 repositories {
     mavenCentral()
     gradlePluginPortal()
+    maven {url "https://nexus.darkcube.eu/repository/dasbabypixel/"}
     maven {
         url "https://oss.sonatype.org/content/repositories/snapshots"
     }
@@ -23,7 +24,7 @@ dependencies {
     implementation gradleApi()
 
     testImplementation gradleTestKit()
-    implementation 'com.gluonhq:substrate:0.0.61-SNAPSHOT'
+    implementation 'com.gluonhq:substrate:0.0.61-custom-SNAPSHOT'
     implementation 'org.openjfx:javafx-plugin:0.1.0'
 }
 
@@ -53,6 +54,11 @@ publishing {
                     password = sonatypePassword.get()
                 }
             }
+        }
+        maven {
+            url = "https://nexus.darkcube.eu/repository/dasbabypixel/"
+            credentials PasswordCredentials
+            name = "DasBabyPixel"
         }
     }
 }

@@ -31,15 +31,25 @@ package com.gluonhq.gradle.tasks;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.MalformedParameterizedTypeException;
 import java.nio.file.Path;
-import java.util.Collections;
-import java.util.List;
-import java.util.Locale;
+import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import com.gluonhq.gradle.GluonFXPlugin;
+import com.gluonhq.substrate.target.WebTargetConfiguration;
+import groovy.lang.Closure;
 import org.gradle.api.GradleException;
 import org.gradle.api.Project;
-import org.gradle.api.artifacts.DependencySet;
+import org.gradle.api.artifacts.*;
+import org.gradle.api.artifacts.component.ModuleComponentIdentifier;
+import org.gradle.api.artifacts.result.ResolvedDependencyResult;
+import org.gradle.api.attributes.Attribute;
+import org.gradle.api.attributes.AttributeContainer;
+import org.gradle.api.internal.artifacts.DefaultModuleIdentifier;
+import org.gradle.api.plugins.ApplicationPlugin;
+import org.gradle.api.plugins.JavaApplication;
 import org.gradle.api.tasks.SourceSet;
 import org.gradle.api.tasks.SourceSetContainer;
 
@@ -48,6 +58,8 @@ import com.gluonhq.substrate.Constants;
 import com.gluonhq.substrate.ProjectConfiguration;
 import com.gluonhq.substrate.SubstrateDispatcher;
 import com.gluonhq.substrate.model.Triplet;
+
+import static com.gluonhq.gradle.GluonFXPlugin.CONFIGURATION_WEB_CLASSPATH_EXTRAS;
 
 class ConfigBuild {
 
@@ -61,7 +73,13 @@ class ConfigBuild {
     }
 
     public SubstrateDispatcher createSubstrateDispatcher() throws IOException {
-        Path clientPath = project.getLayout().getBuildDirectory().dir(Constants.GLUONFX_PATH).get().getAsFile().toPath();
+        Path clientPath = project
+                .getLayout()
+                .getBuildDirectory()
+                .dir(Constants.GLUONFX_PATH)
+                .get()
+                .getAsFile()
+                .toPath();
         project.getLogger().debug(" in directory {}", clientPath);
 
         return new SubstrateDispatcher(clientPath, createSubstrateConfiguration());
@@ -82,9 +100,15 @@ class ConfigBuild {
             }
             project.getLogger().debug("mainClassName = " + mainClassName + " and app name = " + name);
 
-            Path buildRootPath = project.getLayout().getBuildDirectory().dir(Constants.GLUONFX_PATH).get().getAsFile().toPath();
+            Path buildRootPath = project
+                    .getLayout()
+                    .getBuildDirectory()
+                    .dir(Constants.GLUONFX_PATH)
+                    .get()
+                    .getAsFile()
+                    .toPath();
             project.getLogger().debug("BuildRoot: " + buildRootPath);
-            
+
             SubstrateDispatcher dispatcher = new SubstrateDispatcher(buildRootPath, clientConfig);
             result = dispatcher.nativeCompile();
         } catch (Exception e) {
@@ -97,7 +121,15 @@ class ConfigBuild {
     }
 
     private ProjectConfiguration createSubstrateConfiguration() {
-        ProjectConfiguration clientConfig = new ProjectConfiguration((String) project.getProperties().get("mainClassName"), getClassPath());
+        String mainClass = null;
+        JavaApplication application = project.getExtensions().findByType(JavaApplication.class);
+        if (application != null) {
+            mainClass = application.getMainClass().get();
+        }
+        if (mainClass == null) {
+            mainClass = (String) project.getProperties().get("mainClassName");
+        }
+        ProjectConfiguration clientConfig = new ProjectConfiguration(mainClass, getClassPath());
         clientConfig.setJavaStaticSdkVersion(clientExtension.getJavaStaticSdkVersion());
         clientConfig.setJavafxStaticSdkVersion(clientExtension.getJavafxStaticSdkVersion());
 
@@ -119,6 +151,9 @@ class ConfigBuild {
             case Constants.PROFILE_LINUX_AARCH64:
                 targetTriplet = new Triplet(Constants.Profile.LINUX_AARCH64);
                 break;
+            case Constants.PROFILE_WEB:
+                targetTriplet = new Triplet(Constants.Profile.WEB);
+                break;
             default:
                 throw new RuntimeException("No valid target found for " + target);
         }
@@ -132,8 +167,7 @@ class ConfigBuild {
         clientConfig.setRuntimeArgs(clientExtension.getRuntimeArgs());
         clientConfig.setReflectionList(clientExtension.getReflectionList());
         String appId = clientExtension.getAppIdentifier();
-        clientConfig.setAppId(appId != null ? appId :
-                project.getGroup() + "." + project.getName());
+        clientConfig.setAppId(appId != null ? appId : project.getGroup() + "." + project.getName());
         clientConfig.setAppName(project.getName());
 
         clientConfig.setGraalPath(getGraalHome());
@@ -152,22 +186,79 @@ class ConfigBuild {
     private String getClassPath() {
         List<Path> classPath = getClassPathFromSourceSets();
         project.getLogger().debug("Runtime classPath = " + classPath);
-        String cp = classPath.stream()
-                .map(Path::toString)
-                .collect(Collectors.joining(File.pathSeparator)) + File.pathSeparator;
-        return cp;
+        return classPath.stream().map(Path::toString).collect(Collectors.joining(File.pathSeparator));
     }
 
     private List<Path> getClassPathFromSourceSets() {
-        List<Path> classPath = Collections.emptyList();
-        SourceSetContainer sourceSetContainer = (SourceSetContainer) project.getProperties().get("sourceSets");
-        SourceSet mainSourceSet = sourceSetContainer.findByName("main");
+        List<Path> classPath = new ArrayList<>();
+        SourceSetContainer sourceSetContainer = project.getExtensions().getByType(SourceSetContainer.class);
+        SourceSet mainSourceSet = sourceSetContainer.findByName(SourceSet.MAIN_SOURCE_SET_NAME);
         if (mainSourceSet != null) {
-            classPath = mainSourceSet.getRuntimeClasspath().getFiles().stream()
+            classPath.addAll(mainSourceSet
+                    .getRuntimeClasspath()
+                    .getFiles()
+                    .stream()
                     .filter(File::exists)
-                    .map(File::toPath).collect(Collectors.toList());
+                    .map(File::toPath)
+                    .collect(Collectors.toList()));
+            if (Constants.PROFILE_WEB.equals(clientExtension.getTarget())) {
+
+                Configuration runtimeClasspath = project
+                        .getConfigurations()
+                        .getByName(mainSourceSet.getRuntimeClasspathConfigurationName());
+
+                classPath.addAll(resolve(runtimeClasspath, runtimeClasspath
+                        .getResolvedConfiguration()
+                        .getResolvedArtifacts()
+                        .stream()
+                        .filter(a -> a.getModuleVersion().getId().getGroup().equals("org.openjfx"))
+                        .map(it -> {
+                            String group = it.getModuleVersion().getId().getGroup();
+                            String name = it.getName();
+                            String version = Constants.DEFAULT_JAVAFX_JS_SDK_VERSION;
+                            String classifier = Constants.WEB_AOT_CLASSIFIER;
+                            return project
+                                    .getDependencies()
+                                    .create(Map.of("group", group, "name", name, "version", version, "classifier", classifier));
+                        })
+                        .collect(Collectors.toList()))
+                        .filter(p -> !p.getFileName().toString().endsWith("-bck2brwsr.jar"))
+                        .collect(Collectors.toList()));
+
+                classPath.addAll(resolve(runtimeClasspath, WebTargetConfiguration.WEB_AOT_DEPENDENCIES
+                        .stream()
+                        .map(notation -> project.getDependencies().create(notation))
+                        .collect(Collectors.toList())).collect(Collectors.toList()));
+            }
         }
         return classPath;
+    }
+
+    private Stream<Path> resolve(Configuration runtimeClasspath, Collection<Dependency> dependencies) {
+        Configuration configuration = project.getConfigurations().findByName(CONFIGURATION_WEB_CLASSPATH_EXTRAS);
+        if (configuration == null) {
+            configuration = project
+                    .getConfigurations()
+                    .create(CONFIGURATION_WEB_CLASSPATH_EXTRAS, conf -> conf.setCanBeResolved(true));
+            configuration.attributes(attributes -> {
+                for (Attribute<?> attribute : runtimeClasspath.getAttributes().keySet()) {
+                    attribute(attributes, attribute, runtimeClasspath.getAttributes());
+                }
+            });
+        }
+        if (configuration.getState() != Configuration.State.UNRESOLVED)
+            throw new IllegalStateException(configuration.getState().toString());
+        dependencies.stream().distinct().forEach(configuration.getDependencies()::add);
+        ArtifactView view = configuration.getIncoming().artifactView(viewConfiguration -> {
+            viewConfiguration.lenient(true);
+        });
+        Stream<Path> stream = view.getArtifacts().getArtifactFiles().getFiles().stream().map(File::toPath);
+        project.getConfigurations().remove(configuration);
+        return stream;
+    }
+
+    private <T> void attribute(AttributeContainer attributes, Attribute<T> attribute, AttributeContainer source) {
+        attributes.attribute(attribute, Objects.requireNonNull(source.getAttribute(attribute)));
     }
 
     private Path getGraalHome() {
@@ -176,9 +267,7 @@ class ConfigBuild {
             graalvmHome = System.getenv("GRAALVM_HOME");
         }
         if (graalvmHome == null) {
-            throw new GradleException("GraalVM installation directory not found." +
-                    " Either set GRAALVM_HOME as an environment variable or" +
-                    " set graalvmHome in the gluonfx-plugin configuration");
+            throw new GradleException("GraalVM installation directory not found." + " Either set GRAALVM_HOME as an environment variable or" + " set graalvmHome in the gluonfx-plugin configuration");
         }
         return Path.of(graalvmHome);
     }
