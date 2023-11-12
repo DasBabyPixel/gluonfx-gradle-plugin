@@ -54,8 +54,9 @@ public class GluonFXPlugin implements Plugin<Project> {
     public static final String NATIVE_RUN_AGENT_TASK_NAME = "nativeRunAgent";
 
     private static final String CONFIGURATION_CLIENT = "client";
+    public static final String CONFIGURATION_WEB_CLASSPATH_EXTRAS = "gluonfxWebClasspathExtras";
 
-    private ObjectFactory objectFactory;
+    private final ObjectFactory objectFactory;
     private Project project;
 
     @Inject
@@ -79,7 +80,7 @@ public class GluonFXPlugin implements Plugin<Project> {
         createTask(NATIVE_INSTALL_TASK_NAME, NativeInstallTask.class, "Installs the packaged native application on the target platform.");
         createTask(NATIVE_RUN_AGENT_TASK_NAME, NativeRunAgentTask.class, "Runs tracing agent to generate config files");
     }
-    
+
     private void createTask(String name, Class<? extends Task> taskClass, String description) {
         Task t = project.getTasks().create(name, taskClass, project);
         t.setGroup("GluonFX");
